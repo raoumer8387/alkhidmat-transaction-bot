@@ -1,0 +1,151 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+alkhidmat.db
+
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Credentials and API Keys
+google_cred.json
+*cred*.json
+*credential*.json
+*api*key*.txt
+*API*Key*.txt
+Gemini API Key.txt
+*.secret
+
+# Uploaded files and user content
+uploads/
+img's n statement's/
+*.pdf
+*.csv
+*.xlsx
+*.xls
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# Streamlit
+.streamlit/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+
+functionalities.md
+
+# Documentation (if you want to exclude generated docs)
+# docs/_build/
+# site/
+
+# Virtual environments
+venv/
+.env/
+
+# Databases
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Binaries
+ngrok*
+*.exe
+
+# OCR / ML stuff
+EasyOCR/
+OCR Model Testing/
+OCR Model/
+Models/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+
+# Personal files
+*.xlsx
+*.txt
+
+# External folders (parent dirs)
+../*
+
