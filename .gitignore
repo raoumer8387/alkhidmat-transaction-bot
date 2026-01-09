@@ -149,3 +149,6 @@ Thumbs.db
 # External folders (parent dirs)
 ../*
 
+*.db.py
+*.main.py
+*.sheet_sync.py
