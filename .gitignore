@@ -146,6 +146,7 @@ Thumbs.db
 *.xlsx
 *.txt
 !requirements.txt
+!runtime.txt
 
 # External folders (parent dirs)
 ../*
