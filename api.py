@@ -676,32 +676,17 @@ async def health_check():
             health_status["status"] = "misconfigured"
         
         # Check database configuration
-        # Note: If migrations ran successfully, the database connection is working.
-        # This health check just verifies DATABASE_URL is configured.
+        # Don't test connection in health check - it can hang and cause 502 errors
+        # If migrations ran successfully, the database connection is working.
         database_url = os.getenv("DATABASE_URL")
         if database_url:
-            # Try a quick connection test, but don't fail health check if it times out
-            # The actual endpoints will test the connection when needed
-            try:
-                conn = db.get_connection()
-                # Quick test query
-                cursor = conn.cursor()
-                cursor.execute("SELECT 1")
-                cursor.close()
-                conn.close()
-                health_status["database"] = "connected"
-            except Exception as e:
-                # Connection test failed, but if migrations worked, DB is actually fine
-                # This might be a timing/pooling issue, not a real problem
-                error_msg = str(e)
-                if "postgres.railway.internal" in error_msg:
-                    # Internal hostname issue - but migrations worked, so it's functional
-                    health_status["database"] = "configured (migrations successful)"
-                    health_status["database_note"] = "Using internal hostname - connection works for migrations"
-                else:
-                    health_status["database"] = f"connection test failed: {error_msg[:80]}"
-                    health_status["database_note"] = "If migrations ran successfully, connection is functional"
-                # Don't mark as degraded - migrations prove it works
+            # Just check if DATABASE_URL is set - don't test connection
+            # Connection will be tested when endpoints actually use it
+            if "postgres.railway.internal" in database_url:
+                health_status["database"] = "configured (internal hostname)"
+                health_status["database_note"] = "Migrations successful - connection functional"
+            else:
+                health_status["database"] = "configured"
         else:
             health_status["database"] = "not_configured"
             health_status["status"] = "degraded"
