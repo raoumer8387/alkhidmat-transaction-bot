@@ -21,6 +21,12 @@ load_dotenv()
 # FastAPI app initialization
 app = FastAPI(title="Meezan Bank Webhook API", version="1.0.0")
 
+# Add a simple test endpoint that runs before startup
+@app.get("/test")
+async def test_endpoint():
+    """Simple test endpoint to verify app is responding."""
+    return {"status": "ok", "message": "App is responding", "timestamp": datetime.now().isoformat()}
+
 
 # Add middleware to log all requests for debugging
 @app.middleware("http")
