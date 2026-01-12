@@ -21,6 +21,28 @@ load_dotenv()
 # FastAPI app initialization
 app = FastAPI(title="Meezan Bank Webhook API", version="1.0.0")
 
+
+# Add middleware to log all requests for debugging
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all incoming requests for debugging."""
+    import time
+    start_time = time.time()
+    
+    # Log request details
+    client_ip = request.client.host if request.client else "unknown"
+    print(f"[Request] {request.method} {request.url.path} from {client_ip}", flush=True)
+    
+    try:
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        print(f"[Request] {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)", flush=True)
+        return response
+    except Exception as e:
+        process_time = time.time() - start_time
+        print(f"[Request] ERROR {request.method} {request.url.path} - {str(e)} ({process_time:.3f}s)", flush=True)
+        raise
+
 # Security credentials - loaded from environment variables
 # These will be validated on startup, not at import time
 AUTHORIZATION_TOKEN = None
@@ -623,38 +645,47 @@ async def health_check():
     """
     Health check endpoint.
     Returns configuration status without requiring authentication.
+    This endpoint should never raise exceptions - it's used for health checks.
     """
-    health_status = {
-        "status": "ok",
-        "service": "meezan-webhook-api",
-        "configured": True,
-        "missing_vars": []
-    }
-    
-    # Check if required environment variables are set
-    missing_vars = []
-    if not AUTHORIZATION_TOKEN:
-        missing_vars.append("AUTHORIZATION_TOKEN")
-    if not VALID_USER_ID:
-        missing_vars.append("VALID_USER_ID")
-    if not VALID_PASSWORD:
-        missing_vars.append("VALID_PASSWORD")
-    
-    if missing_vars:
-        health_status["configured"] = False
-        health_status["missing_vars"] = missing_vars
-        health_status["status"] = "misconfigured"
-    
-    # Check database connection
     try:
-        conn = db.get_connection()
-        conn.close()
-        health_status["database"] = "connected"
+        health_status = {
+            "status": "ok",
+            "service": "meezan-webhook-api",
+            "configured": True,
+            "missing_vars": []
+        }
+        
+        # Check if required environment variables are set
+        missing_vars = []
+        if not AUTHORIZATION_TOKEN:
+            missing_vars.append("AUTHORIZATION_TOKEN")
+        if not VALID_USER_ID:
+            missing_vars.append("VALID_USER_ID")
+        if not VALID_PASSWORD:
+            missing_vars.append("VALID_PASSWORD")
+        
+        if missing_vars:
+            health_status["configured"] = False
+            health_status["missing_vars"] = missing_vars
+            health_status["status"] = "misconfigured"
+        
+        # Check database connection (non-blocking, don't fail if DB is down)
+        try:
+            conn = db.get_connection()
+            conn.close()
+            health_status["database"] = "connected"
+        except Exception as e:
+            health_status["database"] = f"error: {str(e)}"
+            health_status["status"] = "degraded"
+        
+        return health_status
     except Exception as e:
-        health_status["database"] = f"error: {str(e)}"
-        health_status["status"] = "degraded"
-    
-    return health_status
+        # Never let health check fail - return error status instead
+        return {
+            "status": "error",
+            "service": "meezan-webhook-api",
+            "error": str(e)
+        }
 
 
 @app.on_event("startup")
@@ -728,6 +759,11 @@ async def startup_event():
         print("[Startup] Database auto-initialization disabled (set AUTO_INIT_DB=true to enable)", flush=True)
     
     print("[Startup] ✅ Application startup complete", flush=True)
+    
+    # Log port information for debugging
+    port = os.getenv("PORT", "8000")
+    print(f"[Startup] Server listening on port: {port}", flush=True)
+    print(f"[Startup] Host: 0.0.0.0", flush=True)
     print("[Startup] Server is ready to accept connections", flush=True)
 
 
