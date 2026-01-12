@@ -755,16 +755,30 @@ async def startup_event():
     else:
         print("[Startup] ✅ All required environment variables are set", flush=True)
     
-    # Test database connection
-    try:
-        print("[Startup] Testing database connection...", flush=True)
-        conn = db.get_connection()
-        conn.close()
-        print("[Startup] ✅ Database connection successful", flush=True)
-    except Exception as e:
-        print(f"[Startup] ⚠️  Warning: Database connection failed: {e}", flush=True)
-        print("[Startup] Check DATABASE_URL environment variable", flush=True)
-        sys.stderr.write(f"\nWARNING: Database connection failed: {e}\n")
+    # Test database connection (non-blocking - don't crash if it fails)
+    # The connection will be tested when actually needed by endpoints
+    # Skip this test if DATABASE_URL uses internal hostname (known to fail at startup)
+    database_url = os.getenv("DATABASE_URL", "")
+    if database_url and "postgres.railway.internal" not in database_url:
+        try:
+            print("[Startup] Testing database connection...", flush=True)
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            cursor.close()
+            conn.close()
+            print("[Startup] ✅ Database connection successful", flush=True)
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[Startup] ⚠️  Warning: Database connection test failed: {error_msg[:100]}", flush=True)
+            print("[Startup] Connection will be retried when endpoints are called", flush=True)
+            sys.stderr.write(f"\nWARNING: Database connection test failed: {error_msg[:100]}\n")
+    else:
+        if "postgres.railway.internal" in database_url:
+            print("[Startup] ⚠️  Skipping database connection test (internal hostname)", flush=True)
+            print("[Startup] Connection will be tested when endpoints are called", flush=True)
+        else:
+            print("[Startup] ⚠️  DATABASE_URL not set - database features will be unavailable", flush=True)
     
     # Initialize database schema if enabled
     auto_init = os.getenv("AUTO_INIT_DB", "false").lower() == "true"
