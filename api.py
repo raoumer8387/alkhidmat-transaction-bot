@@ -451,14 +451,28 @@ async def meezan_alert(
     
     try:
         # Security: Check IP whitelist
-        client_ip = request.client.host if request.client else None
-        
-        if not client_ip or client_ip not in ALLOWED_IPS:
-            print(f"Blocked connection attempt from: {client_ip}")
-            raise HTTPException(
-                status_code=403,
-                detail="Access denied. IP address not whitelisted."
-            )
+        # Skip IP check if ALLOWED_IPS is set to "*" (allow all) for testing
+        if ALLOWED_IPS_STR.strip() != "*":
+            # Get real client IP (Railway proxies requests, so check X-Forwarded-For header)
+            client_ip = request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            if not client_ip:
+                client_ip = request.headers.get("X-Real-Ip", "").strip()
+            if not client_ip:
+                client_ip = request.client.host if request.client else None
+            
+            if not client_ip or client_ip not in ALLOWED_IPS:
+                print(f"Blocked connection attempt from: {client_ip}")
+                print(f"Allowed IPs: {ALLOWED_IPS}")
+                print(f"X-Forwarded-For: {request.headers.get('X-Forwarded-For', 'not set')}")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access denied. IP address not whitelisted."
+                )
+        else:
+            # IP whitelist disabled - log but allow
+            forwarded_for = request.headers.get("X-Forwarded-For", "not set")
+            client_ip = request.client.host if request.client else "unknown"
+            print(f"IP whitelist disabled - allowing request from: {client_ip} (X-Forwarded-For: {forwarded_for})")
         
         # Security: Verify Bearer token
         verify_bearer_token(authorization)
