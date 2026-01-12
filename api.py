@@ -22,17 +22,10 @@ load_dotenv()
 app = FastAPI(title="Meezan Bank Webhook API", version="1.0.0")
 
 # Security credentials - loaded from environment variables
-AUTHORIZATION_TOKEN = os.getenv("AUTHORIZATION_TOKEN")
-VALID_USER_ID = os.getenv("VALID_USER_ID")
-VALID_PASSWORD = os.getenv("VALID_PASSWORD")
-
-# Validate that required environment variables are set
-if not AUTHORIZATION_TOKEN:
-    raise ValueError("AUTHORIZATION_TOKEN environment variable is required")
-if not VALID_USER_ID:
-    raise ValueError("VALID_USER_ID environment variable is required")
-if not VALID_PASSWORD:
-    raise ValueError("VALID_PASSWORD environment variable is required")
+# These will be validated on startup, not at import time
+AUTHORIZATION_TOKEN = None
+VALID_USER_ID = None
+VALID_PASSWORD = None
 
 # IP Whitelist - loaded from environment variable (comma-separated)
 ALLOWED_IPS_STR = os.getenv("ALLOWED_IPS", "127.0.0.1,::1")
@@ -634,10 +627,37 @@ async def health_check():
 @app.on_event("startup")
 async def startup_event():
     """
-    Initialize database schema on startup if AUTO_INIT_DB is enabled.
-    Set AUTO_INIT_DB=true in environment variables to enable.
-    Otherwise, run migrations manually using: python migrations/run_migration.py
+    Initialize application on startup:
+    1. Validate required environment variables
+    2. Initialize database schema if AUTO_INIT_DB is enabled
     """
+    global AUTHORIZATION_TOKEN, VALID_USER_ID, VALID_PASSWORD
+    
+    # Load and validate environment variables
+    print("[Startup] Loading environment variables...")
+    AUTHORIZATION_TOKEN = os.getenv("AUTHORIZATION_TOKEN")
+    VALID_USER_ID = os.getenv("VALID_USER_ID")
+    VALID_PASSWORD = os.getenv("VALID_PASSWORD")
+    
+    # Validate required environment variables
+    missing_vars = []
+    if not AUTHORIZATION_TOKEN:
+        missing_vars.append("AUTHORIZATION_TOKEN")
+    if not VALID_USER_ID:
+        missing_vars.append("VALID_USER_ID")
+    if not VALID_PASSWORD:
+        missing_vars.append("VALID_PASSWORD")
+    
+    if missing_vars:
+        error_msg = f"[Startup] ❌ ERROR: Missing required environment variables: {', '.join(missing_vars)}"
+        print(error_msg)
+        print("[Startup] Please set these variables in Railway dashboard → Your service → Variables")
+        print("[Startup] Application will not start until these are configured.")
+        raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+    
+    print("[Startup] ✅ All required environment variables are set")
+    
+    # Initialize database schema if enabled
     auto_init = os.getenv("AUTO_INIT_DB", "false").lower() == "true"
     if auto_init:
         try:
@@ -649,6 +669,8 @@ async def startup_event():
             print("[Startup] You can run migrations manually using: python migrations/run_migration.py")
     else:
         print("[Startup] Database auto-initialization disabled (set AUTO_INIT_DB=true to enable)")
+    
+    print("[Startup] ✅ Application startup complete")
 
 
 if __name__ == "__main__":
