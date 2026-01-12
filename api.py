@@ -620,8 +620,41 @@ async def upload_evidence(
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    return {"status": "ok", "service": "meezan-webhook-api"}
+    """
+    Health check endpoint.
+    Returns configuration status without requiring authentication.
+    """
+    health_status = {
+        "status": "ok",
+        "service": "meezan-webhook-api",
+        "configured": True,
+        "missing_vars": []
+    }
+    
+    # Check if required environment variables are set
+    missing_vars = []
+    if not AUTHORIZATION_TOKEN:
+        missing_vars.append("AUTHORIZATION_TOKEN")
+    if not VALID_USER_ID:
+        missing_vars.append("VALID_USER_ID")
+    if not VALID_PASSWORD:
+        missing_vars.append("VALID_PASSWORD")
+    
+    if missing_vars:
+        health_status["configured"] = False
+        health_status["missing_vars"] = missing_vars
+        health_status["status"] = "misconfigured"
+    
+    # Check database connection
+    try:
+        conn = db.get_connection()
+        conn.close()
+        health_status["database"] = "connected"
+    except Exception as e:
+        health_status["database"] = f"error: {str(e)}"
+        health_status["status"] = "degraded"
+    
+    return health_status
 
 
 @app.on_event("startup")
@@ -630,11 +663,16 @@ async def startup_event():
     Initialize application on startup:
     1. Validate required environment variables
     2. Initialize database schema if AUTO_INIT_DB is enabled
+    
+    Note: If environment variables are missing, the app will still start
+    but endpoints will return errors. Check /health endpoint for status.
     """
     global AUTHORIZATION_TOKEN, VALID_USER_ID, VALID_PASSWORD
     
+    import sys
+    
     # Load and validate environment variables
-    print("[Startup] Loading environment variables...")
+    print("[Startup] Loading environment variables...", flush=True)
     AUTHORIZATION_TOKEN = os.getenv("AUTHORIZATION_TOKEN")
     VALID_USER_ID = os.getenv("VALID_USER_ID")
     VALID_PASSWORD = os.getenv("VALID_PASSWORD")
@@ -650,27 +688,47 @@ async def startup_event():
     
     if missing_vars:
         error_msg = f"[Startup] ❌ ERROR: Missing required environment variables: {', '.join(missing_vars)}"
-        print(error_msg)
-        print("[Startup] Please set these variables in Railway dashboard → Your service → Variables")
-        print("[Startup] Application will not start until these are configured.")
-        raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        print(error_msg, flush=True)
+        print("[Startup] Please set these variables in Railway dashboard → Your service → Variables", flush=True)
+        print("[Startup] Application will start but endpoints will fail until configured.", flush=True)
+        print("[Startup] Check /health endpoint for configuration status.", flush=True)
+        # Don't raise exception - let app start so user can check /health endpoint
+        # But log it clearly so Railway logs show the issue
+        sys.stderr.write(f"\n{'='*60}\n")
+        sys.stderr.write("CRITICAL: Missing required environment variables!\n")
+        sys.stderr.write(f"Missing: {', '.join(missing_vars)}\n")
+        sys.stderr.write("Set these in Railway → Service → Variables\n")
+        sys.stderr.write(f"{'='*60}\n")
+    else:
+        print("[Startup] ✅ All required environment variables are set", flush=True)
     
-    print("[Startup] ✅ All required environment variables are set")
+    # Test database connection
+    try:
+        print("[Startup] Testing database connection...", flush=True)
+        conn = db.get_connection()
+        conn.close()
+        print("[Startup] ✅ Database connection successful", flush=True)
+    except Exception as e:
+        print(f"[Startup] ⚠️  Warning: Database connection failed: {e}", flush=True)
+        print("[Startup] Check DATABASE_URL environment variable", flush=True)
+        sys.stderr.write(f"\nWARNING: Database connection failed: {e}\n")
     
     # Initialize database schema if enabled
     auto_init = os.getenv("AUTO_INIT_DB", "false").lower() == "true"
     if auto_init:
         try:
-            print("[Startup] Auto-initializing database schema...")
+            print("[Startup] Auto-initializing database schema...", flush=True)
             db.initialize_schema()
-            print("[Startup] ✅ Database schema initialized successfully")
+            print("[Startup] ✅ Database schema initialized successfully", flush=True)
         except Exception as e:
-            print(f"[Startup] ⚠️  Warning: Failed to auto-initialize database schema: {e}")
-            print("[Startup] You can run migrations manually using: python migrations/run_migration.py")
+            print(f"[Startup] ⚠️  Warning: Failed to auto-initialize database schema: {e}", flush=True)
+            print("[Startup] You can run migrations manually using: python migrations/run_migration.py", flush=True)
+            sys.stderr.write(f"WARNING: Schema initialization failed: {e}\n")
     else:
-        print("[Startup] Database auto-initialization disabled (set AUTO_INIT_DB=true to enable)")
+        print("[Startup] Database auto-initialization disabled (set AUTO_INIT_DB=true to enable)", flush=True)
     
-    print("[Startup] ✅ Application startup complete")
+    print("[Startup] ✅ Application startup complete", flush=True)
+    print("[Startup] Server is ready to accept connections", flush=True)
 
 
 if __name__ == "__main__":
