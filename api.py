@@ -453,7 +453,7 @@ async def meezan_alert(
         try:
             conn = db.get_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT stan FROM bank_transactions WHERE doc_id = ?", (input_id,))
+            cursor.execute("SELECT stan FROM bank_transactions WHERE doc_id = %s", (input_id,))
             existing_record = cursor.fetchone()
             
             if existing_record:
@@ -554,7 +554,7 @@ async def upload_evidence(
         conn = db.get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute("SELECT id FROM screenshots WHERE donation_id = ?", (donation_id,))
+            cursor.execute("SELECT id FROM screenshots WHERE donation_id = %s", (donation_id,))
             existing_record = cursor.fetchone()
             conn.close()
             

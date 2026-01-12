@@ -3,15 +3,16 @@ Database module for handling all database operations.
 Provides functions for connecting, querying, and managing database records.
 """
 
-import sqlite3
+import psycopg2
 import pandas as pd
 import re
+import os
+from urllib.parse import urlparse
 from datetime import datetime
 from typing import Optional, Tuple, Dict, Any, List
 
 
 # Database configuration
-DB_PATH = "alkhidmat.db"
 SYNC_KEY = "bank_transactions_last_sync"
 
 
@@ -132,14 +133,37 @@ def normalize_date_to_db_format(date_str: Optional[str]) -> Optional[str]:
     return None
 
 
-def get_connection() -> sqlite3.Connection:
+def get_connection():
     """
-    Get a connection to the SQLite database.
+    Get a connection to the PostgreSQL database.
+    Uses DATABASE_URL environment variable if available (for Railway),
+    otherwise falls back to local connection parameters.
     
     Returns:
-        sqlite3.Connection: Database connection object
+        psycopg2.connection: Database connection object
     """
-    return sqlite3.connect(DB_PATH)
+    database_url = os.getenv("DATABASE_URL")
+    
+    if database_url:
+        # Parse DATABASE_URL (format: postgresql://user:password@host:port/database)
+        # Railway and other platforms provide this format
+        parsed = urlparse(database_url)
+        
+        # Handle postgres:// URLs (some platforms use this instead of postgresql://)
+        if parsed.scheme == "postgres":
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
+        
+        return psycopg2.connect(database_url)
+    else:
+        # Local development fallback
+        # You can set these as environment variables or modify as needed
+        return psycopg2.connect(
+            host=os.getenv("DB_HOST", "localhost"),
+            port=os.getenv("DB_PORT", "5432"),
+            database=os.getenv("DB_NAME", "alkhidmat"),
+            user=os.getenv("DB_USER", "postgres"),
+            password=os.getenv("DB_PASSWORD", "")
+        )
 
 
 def get_max_gsheet_row() -> Optional[int]:
@@ -156,19 +180,139 @@ def get_max_gsheet_row() -> Optional[int]:
         conn.close()
 
 
-def _ensure_sync_metadata_table(conn: sqlite3.Connection) -> None:
-    """Create sync metadata table if it does not exist."""
+def _ensure_sync_metadata_table(conn) -> None:
+    """Create sync metadata table if it does not exist (PostgreSQL-compatible)."""
     cursor = conn.cursor()
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS sync_metadata (
             key TEXT PRIMARY KEY,
             value TEXT,
-            updated_at TEXT
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """
     )
     conn.commit()
+
+
+def initialize_schema() -> None:
+    """
+    Initialize all database tables with PostgreSQL-compatible schema.
+    Creates tables if they don't exist with:
+    - SERIAL for auto-increment IDs
+    - CURRENT_TIMESTAMP for timestamp defaults
+    - Proper PostgreSQL data types
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        
+        # Create sync_metadata table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_metadata (
+                key TEXT PRIMARY KEY,
+                value TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        
+        # Create bank_transactions table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bank_transactions (
+                id SERIAL PRIMARY KEY,
+                booking_date TEXT,
+                value_date TEXT,
+                doc_id TEXT,
+                stan TEXT,
+                description TEXT,
+                debit NUMERIC(15, 2),
+                credit NUMERIC(15, 2),
+                available_balance NUMERIC(15, 2),
+                gsheet_row INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        
+        # Create index on doc_id for faster lookups
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_bank_transactions_doc_id 
+            ON bank_transactions(doc_id)
+            """
+        )
+        
+        # Create verification_results table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS verification_results (
+                id SERIAL PRIMARY KEY,
+                amount NUMERIC(15, 2),
+                donor_name TEXT,
+                date TEXT,
+                transaction_id TEXT UNIQUE,
+                status TEXT,
+                department TEXT,
+                currency TEXT,
+                payment_channel TEXT,
+                checks_passed INTEGER,
+                checks_failed INTEGER,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                gsheet_row INTEGER,
+                donation_id TEXT,
+                file_path TEXT
+            )
+            """
+        )
+        
+        # Create index on transaction_id for faster lookups
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_verification_results_transaction_id 
+            ON verification_results(transaction_id)
+            """
+        )
+        
+        # Create screenshots table
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS screenshots (
+                id SERIAL PRIMARY KEY,
+                verification_id INTEGER,
+                donation_id TEXT,
+                file_path TEXT,
+                status TEXT,
+                uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                gsheet_row INTEGER
+            )
+            """
+        )
+        
+        # Create index on verification_id for faster lookups
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_screenshots_verification_id 
+            ON screenshots(verification_id)
+            """
+        )
+        
+        # Create index on donation_id for faster lookups
+        cursor.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_screenshots_donation_id 
+            ON screenshots(donation_id)
+            """
+        )
+        
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise Exception(f"Error initializing database schema: {str(e)}")
+    finally:
+        conn.close()
 
 
 def get_last_sync_time() -> Optional[datetime]:
@@ -177,7 +321,7 @@ def get_last_sync_time() -> Optional[datetime]:
     try:
         _ensure_sync_metadata_table(conn)
         cursor = conn.cursor()
-        cursor.execute("SELECT value FROM sync_metadata WHERE key = ?", (SYNC_KEY,))
+        cursor.execute("SELECT value FROM sync_metadata WHERE key = %s", (SYNC_KEY,))
         row = cursor.fetchone()
         if row and row[0]:
             try:
@@ -199,10 +343,10 @@ def update_last_sync_time(timestamp: datetime) -> None:
         cursor.execute(
             """
             INSERT INTO sync_metadata (key, value, updated_at)
-            VALUES (?, ?, ?)
+            VALUES (%s, %s, %s)
             ON CONFLICT(key) DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at
+                value = EXCLUDED.value,
+                updated_at = EXCLUDED.updated_at
             """,
             (SYNC_KEY, iso_timestamp, iso_timestamp),
         )
@@ -241,7 +385,7 @@ def bulk_insert_bank_transactions(records: List[Dict[str, Any]]) -> Tuple[int, O
         insert_sql = """
             INSERT INTO bank_transactions
             (booking_date, value_date, doc_id, description, debit, credit, available_balance, gsheet_row)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """
         data = [
             (
@@ -301,17 +445,16 @@ def insert_webhook_transaction(data: dict) -> Tuple[bool, Optional[str]]:
         cursor = conn.cursor()
         
         # Check if doc_id already exists (deduplication)
-        cursor.execute("SELECT id FROM bank_transactions WHERE doc_id = ?", (doc_id,))
+        cursor.execute("SELECT id FROM bank_transactions WHERE doc_id = %s", (doc_id,))
         existing = cursor.fetchone()
         if existing:
-            conn.close()
             return False, "Document ID already exists"  # Return failure for duplicate
         
         # Insert new transaction with gsheet_row = -1
         insert_sql = """
             INSERT INTO bank_transactions
             (booking_date, value_date, doc_id, stan, description, debit, credit, available_balance, gsheet_row)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         params = (
             data.get("booking_date"),
@@ -347,26 +490,27 @@ def load_bank_transactions(credit_only: bool = True) -> Tuple[Optional[pd.DataFr
     """
     try:
         conn = get_connection()
-        
-        if credit_only:
-            query = """
-                SELECT id, booking_date, value_date, doc_id, description, 
-                       debit, credit, available_balance, gsheet_row
-                FROM bank_transactions 
-                WHERE credit IS NOT NULL AND credit > 0
-                ORDER BY value_date DESC, booking_date DESC
-            """
-        else:
-            query = """
-                SELECT id, booking_date, value_date, doc_id, description, 
-                       debit, credit, available_balance, gsheet_row
-                FROM bank_transactions 
-                ORDER BY value_date DESC, booking_date DESC
-            """
-        
-        bank_df = pd.read_sql_query(query, conn)
-        conn.close()
-        return bank_df, None
+        try:
+            if credit_only:
+                query = """
+                    SELECT id, booking_date, value_date, doc_id, description, 
+                           debit, credit, available_balance, gsheet_row
+                    FROM bank_transactions 
+                    WHERE credit IS NOT NULL AND credit > 0
+                    ORDER BY value_date DESC, booking_date DESC
+                """
+            else:
+                query = """
+                    SELECT id, booking_date, value_date, doc_id, description, 
+                           debit, credit, available_balance, gsheet_row
+                    FROM bank_transactions 
+                    ORDER BY value_date DESC, booking_date DESC
+                """
+            
+            bank_df = pd.read_sql_query(query, conn)
+            return bank_df, None
+        finally:
+            conn.close()
     except Exception as e:
         return None, f"Error loading transactions from database: {str(e)}"
 
@@ -397,43 +541,44 @@ def search_bank_transactions(
     """
     try:
         conn = get_connection()
-        
-        query = "SELECT * FROM bank_transactions WHERE 1=1"
-        params = []
-        
-        if amount is not None:
-            query += " AND ABS(credit - ?) < 0.01"
-            params.append(amount)
-        
-        if date is not None:
-            query += " AND (value_date = ? OR booking_date = ?)"
-            params.extend([date, date])
-        
-        if description_contains:
-            query += " AND description LIKE ?"
-            params.append(f"%{description_contains}%")
-        
-        if min_amount is not None:
-            query += " AND credit >= ?"
-            params.append(min_amount)
-        
-        if max_amount is not None:
-            query += " AND credit <= ?"
-            params.append(max_amount)
-        
-        if date_from:
-            query += " AND (value_date >= ? OR booking_date >= ?)"
-            params.extend([date_from, date_from])
-        
-        if date_to:
-            query += " AND (value_date <= ? OR booking_date <= ?)"
-            params.extend([date_to, date_to])
-        
-        query += " ORDER BY value_date DESC, booking_date DESC"
-        
-        bank_df = pd.read_sql_query(query, conn, params=tuple(params) if params else None)
-        conn.close()
-        return bank_df, None
+        try:
+            query = "SELECT * FROM bank_transactions WHERE 1=1"
+            params = []
+            
+            if amount is not None:
+                query += " AND ABS(credit - %s) < 0.01"
+                params.append(amount)
+            
+            if date is not None:
+                query += " AND (value_date = %s OR booking_date = %s)"
+                params.extend([date, date])
+            
+            if description_contains:
+                query += " AND description LIKE %s"
+                params.append(f"%{description_contains}%")
+            
+            if min_amount is not None:
+                query += " AND credit >= %s"
+                params.append(min_amount)
+            
+            if max_amount is not None:
+                query += " AND credit <= %s"
+                params.append(max_amount)
+            
+            if date_from:
+                query += " AND (value_date >= %s OR booking_date >= %s)"
+                params.extend([date_from, date_from])
+            
+            if date_to:
+                query += " AND (value_date <= %s OR booking_date <= %s)"
+                params.extend([date_to, date_to])
+            
+            query += " ORDER BY value_date DESC, booking_date DESC"
+            
+            bank_df = pd.read_sql_query(query, conn, params=tuple(params) if params else None)
+            return bank_df, None
+        finally:
+            conn.close()
     except Exception as e:
         return None, f"Error searching transactions: {str(e)}"
 
@@ -474,62 +619,56 @@ def insert_verification_result(
     Returns:
         Tuple of (success boolean, error message if any, inserted verification ID)
     """
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Normalize date to database format
+    normalized_date = normalize_date_to_db_format(date)
+    
+    query = """
+        INSERT INTO verification_results 
+        (amount, donor_name, date, transaction_id, status, department, 
+         currency, payment_channel, 
+         checks_passed, checks_failed, timestamp, gsheet_row, donation_id, file_path)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT(transaction_id) DO UPDATE SET
+            amount = EXCLUDED.amount,
+            donor_name = EXCLUDED.donor_name,
+            date = EXCLUDED.date,
+            status = EXCLUDED.status,
+            department = EXCLUDED.department,
+            currency = EXCLUDED.currency,
+            payment_channel = EXCLUDED.payment_channel,
+            checks_passed = EXCLUDED.checks_passed,
+            checks_failed = EXCLUDED.checks_failed,
+            timestamp = EXCLUDED.timestamp,
+            gsheet_row = EXCLUDED.gsheet_row,
+            donation_id = EXCLUDED.donation_id,
+            file_path = EXCLUDED.file_path
+        RETURNING id
+    """
+    
+    params = (
+        amount, donor_name, normalized_date, transaction_id, status, department,
+        currency, payment_channel,
+        checks_passed, checks_failed, timestamp, gsheet_row, donation_id, file_path
+    )
+    
+    conn = get_connection()
     try:
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        # Normalize date to database format
-        normalized_date = normalize_date_to_db_format(date)
-        
-        query = """
-            INSERT INTO verification_results 
-            (amount, donor_name, date, transaction_id, status, department, 
-             currency, payment_channel, 
-             checks_passed, checks_failed, timestamp, gsheet_row, donation_id, file_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(transaction_id) DO UPDATE SET
-                amount = excluded.amount,
-                donor_name = excluded.donor_name,
-                date = excluded.date,
-                status = excluded.status,
-                department = excluded.department,
-                currency = excluded.currency,
-                payment_channel = excluded.payment_channel,
-                checks_passed = excluded.checks_passed,
-                checks_failed = excluded.checks_failed,
-                timestamp = excluded.timestamp,
-                gsheet_row = excluded.gsheet_row,
-                donation_id = excluded.donation_id,
-                file_path = excluded.file_path
-        """
-        
-        params = (
-            amount, donor_name, normalized_date, transaction_id, status, department,
-            currency, payment_channel,
-            checks_passed, checks_failed, timestamp, gsheet_row, donation_id, file_path
-        )
-        
-        conn = get_connection()
         cursor = conn.cursor()
         cursor.execute(query, params)
+        
+        # Get the ID from RETURNING clause (PostgreSQL doesn't support lastrowid)
+        row = cursor.fetchone()
+        verification_id = row[0] if row else None
+        
         conn.commit()
-
-        verification_id = None
-        if transaction_id:
-            cursor.execute(
-                "SELECT id FROM verification_results WHERE transaction_id = ?",
-                (transaction_id,)
-            )
-            row = cursor.fetchone()
-            if row:
-                verification_id = row[0]
-
-        if verification_id is None:
-            verification_id = cursor.lastrowid
-
-        conn.close()
         return True, None, verification_id
     except Exception as e:
+        conn.rollback()
         return False, f"Error saving verification result: {str(e)}", None
+    finally:
+        conn.close()
 
 
 def get_screenshot_by_verification(verification_id: int) -> Optional[Dict[str, Any]]:
@@ -538,7 +677,7 @@ def get_screenshot_by_verification(verification_id: int) -> Optional[Dict[str, A
     try:
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT * FROM screenshots WHERE verification_id = ? LIMIT 1",
+            "SELECT * FROM screenshots WHERE verification_id = %s LIMIT 1",
             (verification_id,)
         )
         row = cursor.fetchone()
@@ -569,7 +708,7 @@ def upsert_screenshot(
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
         cursor.execute(
-            "SELECT * FROM screenshots WHERE verification_id = ? LIMIT 1",
+            "SELECT * FROM screenshots WHERE verification_id = %s LIMIT 1",
             (verification_id,)
         )
         existing = cursor.fetchone()
@@ -583,8 +722,8 @@ def upsert_screenshot(
             cursor.execute(
                 """
                 UPDATE screenshots
-                SET file_path = ?, status = ?, gsheet_row = ?, uploaded_at = ?
-                WHERE verification_id = ?
+                SET file_path = %s, status = %s, gsheet_row = %s, uploaded_at = %s
+                WHERE verification_id = %s
                 """,
                 (file_path, status, gsheet_row, timestamp, verification_id)
             )
@@ -592,14 +731,15 @@ def upsert_screenshot(
             cursor.execute(
                 """
                 INSERT INTO screenshots (verification_id, file_path, status, gsheet_row, uploaded_at)
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING id
                 """,
                 (verification_id, file_path, status, gsheet_row, timestamp)
             )
 
         conn.commit()
         cursor.execute(
-            "SELECT * FROM screenshots WHERE verification_id = ? LIMIT 1",
+            "SELECT * FROM screenshots WHERE verification_id = %s LIMIT 1",
             (verification_id,)
         )
         row = cursor.fetchone()
@@ -636,13 +776,16 @@ def insert_screenshot_inbox(
             """
             INSERT INTO screenshots 
             (donation_id, file_path)
-            VALUES (?, ?)
+            VALUES (%s, %s)
+            RETURNING id
             """,
             (donation_id, file_path)
         )
         
+        row = cursor.fetchone()
+        screenshot_id = row[0] if row else None
+        
         conn.commit()
-        screenshot_id = cursor.lastrowid
         return True, None, screenshot_id
     except Exception as e:
         conn.rollback()
@@ -680,24 +823,24 @@ def update_screenshot_status(
         if verification_id is not None:
             if screenshot_id:
                 cursor.execute(
-                    "UPDATE screenshots SET status = ?, verification_id = ? WHERE id = ?",
+                    "UPDATE screenshots SET status = %s, verification_id = %s WHERE id = %s",
                     (status, verification_id, screenshot_id)
                 )
             else:
                 cursor.execute(
-                    "UPDATE screenshots SET status = ?, verification_id = ? WHERE donation_id = ?",
+                    "UPDATE screenshots SET status = %s, verification_id = %s WHERE donation_id = %s",
                     (status, verification_id, donation_id)
                 )
         else:
             # Only update status if verification_id is not provided
             if screenshot_id:
                 cursor.execute(
-                    "UPDATE screenshots SET status = ? WHERE id = ?",
+                    "UPDATE screenshots SET status = %s WHERE id = %s",
                     (status, screenshot_id)
                 )
             else:
                 cursor.execute(
-                    "UPDATE screenshots SET status = ? WHERE donation_id = ?",
+                    "UPDATE screenshots SET status = %s WHERE donation_id = %s",
                     (status, donation_id)
                 )
         
@@ -734,30 +877,31 @@ def get_verification_results(
     """
     try:
         conn = get_connection()
-        
-        query = "SELECT * FROM verification_results WHERE 1=1"
-        params = []
-        
-        if status:
-            query += " AND status = ?"
-            params.append(status)
-        
-        if date_from:
-            query += " AND date >= ?"
-            params.append(date_from)
-        
-        if date_to:
-            query += " AND date <= ?"
-            params.append(date_to)
-        
-        query += " ORDER BY timestamp DESC"
-        
-        if limit:
-            query += f" LIMIT {limit}"
-        
-        results_df = pd.read_sql_query(query, conn, params=tuple(params) if params else None)
-        conn.close()
-        return results_df, None
+        try:
+            query = "SELECT * FROM verification_results WHERE 1=1"
+            params = []
+            
+            if status:
+                query += " AND status = %s"
+                params.append(status)
+            
+            if date_from:
+                query += " AND date >= %s"
+                params.append(date_from)
+            
+            if date_to:
+                query += " AND date <= %s"
+                params.append(date_to)
+            
+            query += " ORDER BY timestamp DESC"
+            
+            if limit:
+                query += f" LIMIT {limit}"
+            
+            results_df = pd.read_sql_query(query, conn, params=tuple(params) if params else None)
+            return results_df, None
+        finally:
+            conn.close()
     except Exception as e:
         return None, f"Error loading verification results: {str(e)}"
 
@@ -774,16 +918,18 @@ def get_transaction_by_id(transaction_id: int) -> Optional[Dict[str, Any]]:
     """
     try:
         conn = get_connection()
-        query = "SELECT * FROM bank_transactions WHERE id = ?"
-        cursor = conn.cursor()
-        cursor.execute(query, (transaction_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            columns = [description[0] for description in cursor.description]
-            return dict(zip(columns, row))
-        return None
+        try:
+            query = "SELECT * FROM bank_transactions WHERE id = %s"
+            cursor = conn.cursor()
+            cursor.execute(query, (transaction_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                columns = [description[0] for description in cursor.description]
+                return dict(zip(columns, row))
+            return None
+        finally:
+            conn.close()
     except Exception as e:
         return None
 
@@ -800,16 +946,18 @@ def get_verification_result_by_id(result_id: int) -> Optional[Dict[str, Any]]:
     """
     try:
         conn = get_connection()
-        query = "SELECT * FROM verification_results WHERE id = ?"
-        cursor = conn.cursor()
-        cursor.execute(query, (result_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            columns = [description[0] for description in cursor.description]
-            return dict(zip(columns, row))
-        return None
+        try:
+            query = "SELECT * FROM verification_results WHERE id = %s"
+            cursor = conn.cursor()
+            cursor.execute(query, (result_id,))
+            row = cursor.fetchone()
+            
+            if row:
+                columns = [description[0] for description in cursor.description]
+                return dict(zip(columns, row))
+            return None
+        finally:
+            conn.close()
     except Exception as e:
         return None
 
@@ -823,11 +971,13 @@ def get_transaction_count() -> int:
     """
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM bank_transactions")
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM bank_transactions")
+            count = cursor.fetchone()[0]
+            return count
+        finally:
+            conn.close()
     except Exception as e:
         return 0
 
@@ -844,16 +994,18 @@ def get_verification_count(status: Optional[str] = None) -> int:
     """
     try:
         conn = get_connection()
-        cursor = conn.cursor()
-        
-        if status:
-            cursor.execute("SELECT COUNT(*) FROM verification_results WHERE status = ?", (status,))
-        else:
-            cursor.execute("SELECT COUNT(*) FROM verification_results")
-        
-        count = cursor.fetchone()[0]
-        conn.close()
-        return count
+        try:
+            cursor = conn.cursor()
+            
+            if status:
+                cursor.execute("SELECT COUNT(*) FROM verification_results WHERE status = %s", (status,))
+            else:
+                cursor.execute("SELECT COUNT(*) FROM verification_results")
+            
+            count = cursor.fetchone()[0]
+            return count
+        finally:
+            conn.close()
     except Exception as e:
         return 0
 
