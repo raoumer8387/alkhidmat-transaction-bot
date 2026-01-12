@@ -631,6 +631,26 @@ async def health_check():
     return {"status": "ok", "service": "meezan-webhook-api"}
 
 
+@app.on_event("startup")
+async def startup_event():
+    """
+    Initialize database schema on startup if AUTO_INIT_DB is enabled.
+    Set AUTO_INIT_DB=true in environment variables to enable.
+    Otherwise, run migrations manually using: python migrations/run_migration.py
+    """
+    auto_init = os.getenv("AUTO_INIT_DB", "false").lower() == "true"
+    if auto_init:
+        try:
+            print("[Startup] Auto-initializing database schema...")
+            db.initialize_schema()
+            print("[Startup] ✅ Database schema initialized successfully")
+        except Exception as e:
+            print(f"[Startup] ⚠️  Warning: Failed to auto-initialize database schema: {e}")
+            print("[Startup] You can run migrations manually using: python migrations/run_migration.py")
+    else:
+        print("[Startup] Database auto-initialization disabled (set AUTO_INIT_DB=true to enable)")
+
+
 if __name__ == "__main__":
     import uvicorn
     # Use PORT environment variable (Railway provides this) or default to 8000
