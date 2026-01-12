@@ -640,6 +640,12 @@ async def upload_evidence(
         )
 
 
+@app.get("/")
+async def root():
+    """Root endpoint - simple connectivity test."""
+    return {"status": "ok", "message": "API is running"}
+
+
 @app.get("/health")
 async def health_check():
     """
