@@ -55,6 +55,10 @@ AUTHORIZATION_TOKEN = None
 VALID_USER_ID = None
 VALID_PASSWORD = None
 
+# Channel validation - hardcoded expected values
+EXPECTED_CHANNEL_TYPE = "MBL"
+EXPECTED_CHANNEL_SUBTYPE = "CMS"
+
 # IP Whitelist - loaded from environment variable (comma-separated)
 ALLOWED_IPS_STR = os.getenv("ALLOWED_IPS", "127.0.0.1,::1")
 ALLOWED_IPS = [ip.strip() for ip in ALLOWED_IPS_STR.split(",") if ip.strip()]
@@ -436,6 +440,7 @@ async def meezan_alert(
     - IP whitelist check (only allows requests from trusted IPs)
     - Verifies Bearer token in Authorization header
     - Verifies userID and password in request body
+    - Validates channelType and channelSubType match expected values
     
     Processing:
     - Accepts single transaction
@@ -444,7 +449,7 @@ async def meezan_alert(
     
     Returns:
     - Success: statusCode "00" with id and stan
-    - Failure: statusCode "01" with error description (only for auth/validation errors)
+    - Failure: statusCode "01" with error description (auth/validation errors)
     """
     input_id = None
     stan = None
@@ -479,6 +484,26 @@ async def meezan_alert(
         
         # Security: Verify userID and password
         verify_credentials(request_body.userID, request_body.password)
+        
+        # Validation: Check channelType and channelSubType
+        # Both must match expected values exactly (None values are considered invalid)
+        channel_type_valid = request_body.channelType == EXPECTED_CHANNEL_TYPE
+        channel_subtype_valid = request_body.channelSubType == EXPECTED_CHANNEL_SUBTYPE
+        
+        if not channel_type_valid or not channel_subtype_valid:
+            # Generate a temporary stan for the error response
+            stan = str(uuid.uuid4())
+            input_id = request_body.hostData.id if request_body.hostData else ""
+            print(f"Validation failed: channelType={request_body.channelType} (expected {EXPECTED_CHANNEL_TYPE}), channelSubType={request_body.channelSubType} (expected {EXPECTED_CHANNEL_SUBTYPE})")
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "statusCode": "01",
+                    "statusDesc": "Invalid Channel Type or Subtype",
+                    "id": input_id,
+                    "stan": stan
+                }
+            )
         
         # Extract doc_id for duplicate check
         input_id = request_body.hostData.id
