@@ -288,6 +288,7 @@ def parse_transaction_datetime(datetime_str: Optional[str]) -> Optional[str]:
     
     Expected formats (common bank datetime formats):
     - ISO format: "2025-10-02T18:08:54" or "2025-10-02T18:08:54.000Z"
+    - ISO with high precision: "2025-05-21T11:12:10.8299521359872Z" (handles >6 digit microseconds)
     - Custom format: "02-OCT-2025 18:08:54" or similar
     
     Args:
@@ -302,6 +303,31 @@ def parse_transaction_datetime(datetime_str: Optional[str]) -> Optional[str]:
     datetime_str = datetime_str.strip()
     if not datetime_str:
         return None
+    
+    # Handle high-precision microseconds (more than 6 digits) and Z suffix
+    # Step 1: Remove Z suffix temporarily if present
+    has_z_suffix = datetime_str.endswith('Z')
+    if has_z_suffix:
+        datetime_str = datetime_str[:-1]
+    
+    # Step 2: If string has microseconds (contains a dot), truncate to 6 digits max
+    if '.' in datetime_str:
+        # Split on the dot to separate date/time from fractional seconds
+        parts = datetime_str.split('.')
+        if len(parts) == 2:
+            integer_part = parts[0]
+            fractional_part = parts[1]
+            
+            # Truncate fractional part to maximum 6 digits (Python's strptime limit)
+            if len(fractional_part) > 6:
+                fractional_part = fractional_part[:6]
+            
+            # Reconstruct the datetime string with truncated microseconds
+            datetime_str = f"{integer_part}.{fractional_part}"
+    
+    # Step 3: Re-add Z suffix if it was originally present
+    if has_z_suffix:
+        datetime_str = f"{datetime_str}Z"
     
     # Try common datetime formats
     formats_to_try = [
